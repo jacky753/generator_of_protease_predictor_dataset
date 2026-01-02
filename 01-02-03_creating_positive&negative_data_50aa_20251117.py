@@ -1,0 +1,815 @@
+# Spike proteinを開裂するproteasesの基質たちを学習して，新たなSpike protein を開裂するproteases を探す機械学習モデルです．
+
+# merops からcopy&pasteで作ったproteaseの基質たちの情報が入ったファイルの名前を配列に格納します．
+#ここもいずれは自動化したい．
+#おそらく，merops databaseを構築して，そこから情報を検索するようにすればいいのかと．
+
+#2022/07/10現在
+#MEROPSのDBは構築済みなので，Uniprot IDのリストをMEROPS DBから作成すればよくなりました．
+#Web上のMEROPSでは存在する基質データが構築したDBにはまだ反映されていなくて存在しない例もあるようなので注意です．
+
+
+#1
+import re
+import numpy as np
+import glob
+import random
+import os
+import matplotlib.pyplot as plt
+import numpy as np
+
+#ライブラリのインポート
+import pandas as pd
+from urllib.request import urlopen
+import numpy as np
+from lxml import etree
+
+#MEROPSはmysqlでもう動くので本当はここは使いたくない．
+#2022/07/26現在訂正します．MySQLによるMROPSデータベースでは，更新が間に合っていないデータがあるので，
+# ウェブからコピペで取得したものを使うべきです．たった４つしかポジティブデータがないので，
+# 手動でできる．この時，Dataframeによってコピペしたファイルを扱います．
+
+# mysqlに接続します．
+#ここからはじまる．
+#import mysql.connector as mydb
+import MySQLdb as mydb
+
+import csv
+import pickle
+
+def main():
+    cur = con_db()
+    merops_code_mece = create_merops_code_table()
+    print("merops_code_mece.")
+    print(merops_code_mece)
+    print(len(merops_code_mece))
+
+    trim_len = 50 # 108
+
+    np.random.seed(42)
+    subs_count_list = create_subs_count_list()
+
+    #df_cleave_pattern = pd.DataFrame(
+    #data = {'uniprot_id':[], 'cleave_pattern':[]}
+    #)
+    #print("df_cleave_pattern")
+    #print(df_cleave_pattern) 
+
+    df_full_aa_shorter_than_trim_len = pd.DataFrame({
+        'protease_num': [], 'merops_id': [], 'substrate_num': [], 'uniprot_id': [], 'full_aa': [], 'full_aa_length':[], 'p1': []
+    }) 
+
+    #count = 0
+    #protease_turn = 0
+    #substrate_turn = 0
+    # error_list = ["DAA158"]
+    error_list = []
+    
+    create_posi_nega_dataset(merops_code_mece, cur, error_list, df_full_aa_shorter_than_trim_len, trim_len)
+
+
+def con_db():
+    # コネクションの作成
+    conn = mydb.connect(
+        host='localhost',
+        port=3306,
+        user='root',
+        password='miyazakilab',
+        #database='meropsrefs01'
+        database='meropsweb12_1'
+    )
+
+    # DB操作用にカーソルを作成
+    cur = conn.cursor()
+    return cur
+
+# MySQLで使うMEROPS code辞書作成
+#HATL1は開裂する基質情報が登録されていなかった．（2022年7月24日現在）
+#TMPRSS13はMSPLとも呼ぶ． MSPLは4つの基質情報があったが，Uniprot IDが記載されていなかった．(2022年7月24日現在)
+
+#import csv
+
+def create_merops_code_table():
+    csv_file = open("./learning_data/merops_code_mece.csv", "r", encoding="ms932", errors="", newline="" )
+    #リスト形式
+    f = csv.reader(csv_file, delimiter=",", doublequote=True, lineterminator="\r\n", quotechar='"', skipinitialspace=True)
+
+    print(f)
+    #print(len(f))
+
+    i = 0
+    for row in f:
+        print(row)
+        merops_code_mece = row
+        i = i + 1
+        if i == 1:
+            break
+
+    print("merops_code_mece")
+    print(merops_code_mece)
+    len(merops_code_mece)
+    return merops_code_mece
+
+
+def create_subs_count_list():
+    csv_file = open("./learning_data/subs_count_list.csv", "r", encoding="ms932", errors="", newline="" )
+    #リスト形式
+    f2 = csv.reader(csv_file, delimiter=",", doublequote=True, lineterminator="\r\n", quotechar='"', skipinitialspace=True)
+
+    for row in f2:
+        #print(row)
+        subs_count_list = row
+
+    print("subs_count_list.")
+    print(subs_count_list)
+    return subs_count_list
+
+
+# Uniprot APIを用いてアミノ酸配列を取得するスクリプトを用意します．
+#https://seiyakukenkyusya.com/programming/collecting-uniprot-information/
+#上記のリンク先を参考にしました．
+#uid_eg = 'P78365'
+
+def aaseq_from_uid(uid, protease_turn, substrate_turn):
+    df = pd.DataFrame(np.arange(3).reshape(1, 3), columns=['uniprotKB_accession', 'function', 'sequence'], index=['protease'+str(protease_turn)+'_substrate'+str(substrate_turn)])
+
+    for column_name in df:
+        df[column_name] = df[column_name].astype(str)
+
+    df['uniprotKB_accession'][0] = uid
+
+    #display(df)    
+
+    url = "https://www.uniprot.org/uniprot/" + uid + ".xml"
+    f = urlopen(url)
+    xml = f.read()
+    root = etree.fromstring(xml)
+    
+    #以下のコードは下の説明を参照
+    function = root.find('./entry/comment[@type="function"]', root.nsmap)
+    if function==None:
+        print("function was not detected.")
+        pass
+    else:
+        df["function"][0] = function[0].text
+        #print(function[0].text+"¥n")
+
+    sequence = root.find('./entry/sequence', root.nsmap) 
+    if sequence==None: 
+        print("sequence was not detected.")
+        pass 
+    else: 
+        df["sequence"][0] = sequence.text 
+        #print(sequence.text+"¥n")
+
+    #display(df) 
+    #df0=pd.concat([df0, df], axis=0)
+    #display(df0)
+    print(df)
+    print(df["sequence"][0]) 
+    return df["sequence"][0]
+    
+    
+
+
+#print("aaseq_from_uid(uid_eg, 0, 0): {}".format(aaseq_from_uid(uid_eg, 0, 0)))
+
+
+# 取得したアミノ酸からP1, P1'を特定する．今回はP4部位を戻り値にした．
+
+# ファイルを各々読み込んで，Uniprot IDからアミノ酸配列を取得します．
+#&nbsp;取得したアミノ酸配列の開裂部位を特定して，開裂部位のP1, P1' を中心に，開裂部位左に10アミノ酸，開裂部位右に10アミノ酸だけ取り出して，1or0の値，電荷値，親水性値を階数3のテンソルに代入しています．値が入っている最奥のベクトルの次元が３次元で，cahannel数が3と呼びます．
+#行数がアミノ酸の種類である20になり，列数が取得したデータのアミノ酸である20になり，20×20型行列ができることになる．
+#例えると，カラー画像の入力がR, G, Bであるのと同じになっています．<br>
+#A = [<br>
+#        &emsp;[<br>
+#          &emsp;&emsp;[R, G, B], [R, G, B], [R, G, B]<br>
+#           &emsp;], <br>
+#        &emsp;[<br>
+#          &emsp;&emsp;[R, G, B], [R, G, B], [R, G, B]<br>
+#            &emsp;],<br> 
+#        &emsp;[<br>
+#          &emsp;&emsp;[R, G, B], [R, G, B], [R, G, B]<br>
+#            &emsp;], <br>
+#                                                   ]<br>
+#A[0][0][0] == [R, G, B]<br>
+#というような形の階数3のテンソルです．階数3とは，各値に基底が3種類あって，その基底3つのすべての組み合わせでできる基底でできた空間を階数3のテンソルと呼びます．<br>
+#基底3種類をx, y, zとすると，(x or y or z) × (x or y or z) × (x or y or z)で各括弧内のグループから1つずつ取り出した基底ができて，27種類できることになる．例えば，ある階数3のテンソルの基底はAxxz, Ayzx, Ayyxなどが考えられます．<br>
+#<br>
+#https://www.youtube.com/watch?v=f5liqUk0ZTw<br>
+#の10:30を参照ください．<br>
+#<br>
+#よって，今回の3階テンソルの場合，今回の20×20型行列であり，各ベクトルには3つの値が3channelとして入っているので，次のように43種類の基底があって，(20種類の基底)×(20種類の基底)×(3種類)=1200パターンの基底を持つ3階テンソルと考えられます．<br>
+#<br>
+#&emsp;&emsp;x_train[基質i][20種類のアミノ酸][取得したアミノ酸1つずつが20個][1or0, 電荷値，親水性値の各値一個ずつ]<br>
+#<br>
+#以上のような3階テンソル（半変テンソルか，共変テンソルか，どちらなのかは後ほど調べます．）を訓練データとして作成します．<br>
+
+## 注意!! Uniprot IDは正規表現で[A-Z]{1}[0-9A-Z]{5}のように表す．
+#だけど，文字列"MERNUM"とかがヒットするのはどう対処するのか．
+#https://trade-and-develop.hatenablog.com/entry/2017/02/23/021119
+
+#cur = conn.cursor(buffered=True)
+#cur = conn.cursor()
+
+# creating positive data 
+#print("merops_code_mece.")
+#print(merops_code_mece)
+#print(len(merops_code_mece))
+
+
+#main function
+
+def create_posi_nega_dataset(merops_code_mece, cur, error_list, df_full_aa_shorter_than_trim_len, trim_len):
+    #count = 0
+    protease_turn = 0
+    #substrate_turn = 0
+    #error_list = ["DAA158"]
+    # for protease in merops_code_mece:
+    for protease in ['S01.247']:
+        print("==================================protease"+str(protease_turn)+"=======================================")
+        print("protease.")
+        print(protease)
+        print("protease_turn.")
+        print(protease_turn)
+
+        #if protease_turn < 858:
+        #    protease_turn = protease_turn + 1
+        #    continue
+        protease_turn = protease_turn + 1
+            
+        #if protease in already_read:
+        #    continue
+        
+        # substrate_turn = 0
+        
+        df_cleave_pattern = pd.DataFrame(
+            data={'protease_turn': [], 'merops_id': [], 'substrate_turn': [], 'uniprot_id':[], 'p1':[], 'cleave_pattern':[], 'full_aa': []}
+        )
+        #display(df_cleave_pattern)
+        print("df_cleave_pattern.")
+        print(df_cleave_pattern)
+
+        df_negative_pattern = pd.DataFrame(data={
+            'protease_turn': [], 'merops_id': [], 'substrate_turn': [], 'uniprot_id':[], 'p1':[], 'negative_pattern':[], 'full_aa': [], 'start': [], 'end': []
+        })
+
+        #display(df_negative_pattern)    
+        print("df_negative_pattern.")
+        print(df_negative_pattern)
+
+        df_uniprot_id_error = pd.DataFrame({
+            'protease_turn': [], 'merops_id': [], 'substrate_turn': [], 'uniprot_id':[]
+        })
+        
+        #func1
+        #cleave_pattern = ""
+        #cleave_pattern = cptn()       
+
+        merops_code = [protease]
+        print("this is ok.")
+
+        #proteaseに紐づけられている基質を取得する
+        print("merops_code:" + protease)
+        cur.execute("SELECT uniprot_acc, p1 FROM cleavage where code=(%s);", merops_code)
+        subs = cur.fetchall()
+        print("subs.")
+        print(subs)
+        for sub in subs:
+            print("sub.")
+            print(sub)
+
+        print("subs.")
+        print(len(subs))
+
+        """
+        if len(subs) > 1000:
+            len_subs = 1000
+            
+            np.random.seed(0)
+            a = np.arange(len(subs))
+            np.random.shuffle(a)
+            b = a[0:1000]
+            print("b.")
+            print(b)
+            print(len(b))
+            
+            list_subs = []
+            for i in b:
+                list_subs.append(subs[i])
+        else:
+            len_subs = len(subs)
+            list_subs = subs
+        
+        if len_subs == 0:
+            continue
+        """    
+        #list_subs = len(subs)
+        #list_subs = subs
+        list_subs = (('A3R530', 320), ('A3R534', 338), ('F2P1E0', 338), ('Q96T73', 255), ('P51170', 135), ('P51170', 136), ('P51170', 137), ('P51170', 138), ('P51170', 153), ('P51170', 168), ('P51170', 170), ('P51170', 172), ('P51170', 178), ('P51170', 179), ('P51170', 180), ('P51170', 181), ('P51170', 189), ('K9N5Q8', 887), ('P0DTC2', 815), ('P59594', 797), ('O15393', 255))
+            
+        #positive_dataの元となる配列データを作成する
+        df_cleave_pattern = create_posi_dataset(protease, list_subs, df_cleave_pattern, protease_turn, error_list, df_full_aa_shorter_than_trim_len, df_uniprot_id_error, trim_len)
+
+        #negative_dataの元となる配列データを作成する
+        df_negative_pattern = create_nega_dataset(protease, list_subs, df_negative_pattern, protease_turn, error_list, df_full_aa_shorter_than_trim_len, df_uniprot_id_error, trim_len) 
+    print("END")
+    #return df_cleave_pattern, df_negative_pattern
+
+def create_posi_dataset(protease, list_subs, df_cleave_pattern, protease_turn, error_list, df_full_aa_shorter_than_trim_len, df_uniprot_id_error, trim_len):
+    print("list_subs: ")
+    print(list_subs)
+    for i in range(len(list_subs)):
+        
+        print(f"----------------------protease: {protease_turn}, {protease}; positive_data: {i+1}/{len(list_subs)}, {list_subs[i]}--------------------------")
+        substrate_turn = i
+        # if protease == 'S01.300':
+        #     break
+        #if protease_turn == 5:
+        #    break
+        
+        
+        # rを付けることを推奨。
+        # バックスラッシュをそのままで分かりやすいため。
+        # uniprot_id = list_subs[i][0].strip()
+        """
+        print(f"uid: {uniprot_id}")
+        content = fr'{uniprot_id}' 
+        pattern = '.*?([A-Z]{1})([A-Z0-9]{2})([A-Z0-9]{3})'
+
+        result = re.match(pattern, content)
+
+        if result: #none以外の場合
+            print("result.")
+            print(result) 
+            # output:<_sre.SRE_Match object; span=(0, 3), match='hel'>
+            print("result.span().")
+            print(result.span()) 
+            # output:(0, 3)
+            print("result.group().")
+            print(result.group()) 
+            # output:hel
+        else:   
+            print("result.")
+            print(result) 
+            continue
+            
+        uniprot_id = result.group(1) + result.group(2) + result.group(3)
+        print(f"uniprot_id: {uniprot_id}")
+
+        """
+
+        #if uniprot_id in error_list:
+        #    print("error_list.")
+        #    print(error_list)
+        #    break
+        #uniprot_id = uniprot_id.strip()
+        uniprot_id = list_subs[i][0].strip()
+        print(f"uniprot_id: {uniprot_id}")
+        content = fr'{uniprot_id}' 
+
+        #pattern = '.*?([A-Z]{1})([A-Z0-9]{2})([A-Z0-9]{3})'
+        pattern01 = '.*?([A-Z0-9]{6})$'
+        pattern02 = '(^[A-Z0-9]{6}.*?)'
+        result01 = re.match(pattern01, content)
+        print("result01: ")
+        print(result01)
+        #result01 = result01[0].strip()
+        result02 = re.match(pattern02, content)
+        print("result02")
+        print(result02)
+        #result02 = result02[0].strip()
+        if result01 is not None:
+            if len(result01[0]) == 6:
+                result = result01
+        elif result02 is not None:
+            if len(result02[0]) == 6:
+                result = result02
+        else:
+            ("re error!")
+            df_uniprot_id_error[f'{i}'] = [protease_turn, protease, substrate_turn, uniprot_id]
+            continue
+        #else:
+        #    pass
+        uniprot_id = result[0]
+        print("uniprot_id after re: {}".format(uniprot_id))
+        print("result.")
+        print(result) 
+
+        if result: #none以外の場合
+            #print("result.")
+            #print(result) 
+            # output:<_sre.SRE_Match object; span=(0, 3), match='hel'>
+            #print("result.span().")
+            #print(result.span()) 
+            # output:(0, 3)
+            #print("result.group().")
+            #print(result.group()) 
+            # output:hel
+            pass
+        else:   
+            #print("result.")
+            #print(result) 
+            df_uniprot_id_error[f'{i}'] = [protease_turn, protease, substrate_turn, uniprot_id]
+            continue
+        #p1 = sub[j][1]
+        #print(f"p1: {p1}") 
+        
+        p1 = list_subs[i][1]
+        print(f"p1: {p1}")
+
+        #アミノ酸配列全長を取得する
+        full_aa = aaseq_from_uid(uniprot_id, protease_turn, substrate_turn)
+        print("full_aa.")
+        print(full_aa)
+        print(type(full_aa))
+        #print(f"length of full_aa: "+str(len(full_aa)))
+        if len(full_aa) < trim_len:
+            print("full_aa len < trim_len: {}.".format(trim_len))
+            df_full_aa_shorter_than_trim_len.loc['f{substrate_turn}'] = [protease_turn, protease, substrate_turn, uniprot_id, full_aa, len(full_aa)]
+            continue
+        
+        
+        #例外である端っこも取得できるように工夫する
+        if p1 - trim_len/2 >= 0 and len(full_aa) - p1 >= trim_len/2:
+            cleave_pattern = full_aa[int(p1-trim_len/2) :int(p1+trim_len/2)]
+        elif p1 - trim_len/2 < 0:
+            term = int(trim_len/2 - p1)
+            print("term: {}".format(term))
+            print("type of term: {}".format(type(term)))
+            cleave_pattern = "-"*term + full_aa[0:trim_len-term]
+        elif len(full_aa) - p1 < trim_len/2:
+            term = int(trim_len/2 - (len(full_aa) - p1))
+            cleave_pattern = full_aa[len(full_aa) - (trim_len-term):len(full_aa)] + "-"*term
+        else:
+            pass
+        
+        #開裂パターンを表示する
+        #print("cleave_pattern.")
+        #print(cleave_pattern)
+        
+        #df_cleave_pattern.loc[f'{i}'] = [uniprot_id, p1, cleave_pattern]
+        # data={'protease_turn': [], 'merops_id': [], 'substrate_turn': [], 'uniprot_id':[], 'p1':[], 'cleave_pattern':[], 'full_aa': []}
+        df_cleave_pattern.loc[f'{i}'] = [protease_turn, protease, substrate_turn, uniprot_id, p1, cleave_pattern, full_aa]
+
+        #display(df_cleave_pattern)
+        print("df_cleave_pattern.")
+        print(df_cleave_pattern)
+
+        substrate_turn = substrate_turn + 1
+
+        filename = f'./proteases/cleave_pattern_one_letter_aa_{protease}.csv'
+        df_cleave_pattern.to_csv(filename)
+        print("df_cleave_pattern.")
+        print(df_cleave_pattern)   
+
+        filename_short_aa = f'./proteases/positive_pattern_aa_less_than_eight_{protease}.csv'
+        df_full_aa_shorter_than_trim_len.to_csv(filename_short_aa)
+
+        filename_uniprot_id_error = f'./proteases/positive_pattern_uniprot_id_error_{protease}.csv'
+        df_uniprot_id_error.to_csv(filename_uniprot_id_error)
+        
+    filename = f'./proteases/cleave_pattern_one_letter_aa_{protease}.csv'
+    df_cleave_pattern.to_csv(filename)
+    print("df_cleave_pattern.")
+    print(df_cleave_pattern)   
+
+    filename_short_aa = f'./proteases/positive_pattern_aa_less_than_eight_{protease}.csv'
+    df_full_aa_shorter_than_trim_len.to_csv(filename_short_aa)
+
+    filename_uniprot_id_error = f'./proteases/positive_pattern_uniprot_id_error_{protease}.csv'
+    df_uniprot_id_error.to_csv(filename_uniprot_id_error)
+
+    substrate_turn = 0
+    return df_cleave_pattern
+
+def create_nega_dataset(protease, list_subs, df_negative_pattern, protease_turn, error_list, df_full_aa_shorter_than_trim_len, df_uniprot_id_error, trim_len):
+    subs_memo = []
+    p1_memo = []
+    df_no_negative_data = pd.DataFrame({
+        'protease_turn': [], 'merops_id': [], 'substrate_tun': [], 'uniprot_id': [], 'full_aa': [], 'full_aa_length': [] #, 'p1': []
+    })
+    num_no_negative_data = 0
+    temp_negative_pattern_list = []
+    num_negative_data = 0
+
+    for i in range(len(list_subs)):
+        print(f"----------------------protease: {protease_turn}, {protease}; negative_data: {i+1}/{len(list_subs)}, {list_subs[i]}--------------------------")
+        substrate_turn = i
+
+        uniprot_id = list_subs[i][0].strip()
+        def uniprot_id_re(uniprot_id):
+            print(f"uniprot_id: {uniprot_id}")
+            content = fr'{uniprot_id}' 
+
+            #pattern = '.*?([A-Z]{1})([A-Z0-9]{2})([A-Z0-9]{3})'
+            pattern01 = '.*?([A-Z0-9]{6})$'
+            pattern02 = '(^[A-Z0-9]{6}.*?)'
+            result01 = re.match(pattern01, content)
+            print("result01: ")
+            print(result01)
+            #result01 = result01[0].strip()
+            result02 = re.match(pattern02, content)
+            print("result02")
+            print(result02)
+            #result02 = result02[0].strip()
+            if result01 is not None:
+                if len(result01[0]) == 6:
+                    result = result01
+            elif result02 is not None:
+                if len(result02[0]) == 6:
+                    result = result02
+            else:
+                ("re error!")
+                df_uniprot_id_error[f'{i}'] = [protease_turn, protease, substrate_turn, uniprot_id]
+                # continue
+            #else:
+            #    pass
+            uniprot_id_re = result[0]
+            print("uniprot_id after re: {}".format(uniprot_id))
+            print("result.")
+            print(result) 
+
+            if result: #none以外の場合
+                #print("result.")
+                #print(result) 
+                # output:<_sre.SRE_Match object; span=(0, 3), match='hel'>
+                #print("result.span().")
+                #print(result.span()) 
+                # output:(0, 3)
+                #print("result.group().")
+                #print(result.group()) 
+                # output:hel
+                pass
+            else:   
+                #print("result.")
+                #print(result) 
+                df_uniprot_id_error[f'{i}'] = [protease_turn, protease, substrate_turn, uniprot_id]
+                #continue
+            return uniprot_id_re
+        uniprot_id = uniprot_id_re(uniprot_id)
+
+        p1 = list_subs[i][1]
+        print(f"p1: {p1}")
+
+
+        subs_memo.append(list_subs[i][0])
+        p1_memo.append(list_subs[i][1])
+        if i > 0:
+            print(f"list_subs[i][0]: {list_subs[i][0]}")
+            print(f"list_subs[i-1][0]: {list_subs[i-1][0]}")
+            print(f"list_subs[i][1]: {list_subs[i][1]}")
+            print(f"list_subs[i-1][1]: {list_subs[i-1][1]}")
+            if list_subs[i][0] == list_subs[i-1][0]:
+                continue
+            elif list_subs[i][0] != list_subs[i-1][0] and len(subs_memo) >= 3: 
+                print("#"*10+"i: {}, ".format(i)+"make negative patterns for {}, {}".format(protease, uniprot_id))
+                print("subs_memo: ")
+                last_subs_memo = subs_memo.pop(-1)
+                print(subs_memo)
+                print(len(subs_memo))
+                print(last_subs_memo)
+                print("p1_memo: ")
+                last_p1_memo = p1_memo.pop(-1)
+                print(p1_memo)
+                print(len(p1_memo))
+                print(last_p1_memo)
+
+                uniprot_id = list_subs[i-1][0].strip()
+                uniprot_id = uniprot_id_re(uniprot_id)
+                full_aa = aaseq_from_uid(uniprot_id, protease_turn-1, substrate_turn-1)
+                df_full_aa = pd.DataFrame(list(full_aa), columns=["char"])
+                print("df_full_aa: ")
+                print(df_full_aa)
+
+                index_list = list(range(0, len(full_aa)))
+                df_index = pd.DataFrame({
+                    'index_list': index_list
+                })
+                cond_list = []
+                for j in range(len(p1_memo)):
+                    cond = (df_index['index_list'] <  p1_memo[j]-trim_len/2) | (df_index['index_list'] > p1_memo[j]+trim_len/2)
+                    cond_list.append(cond)
+                #and_cond_list = []
+                #for j in range(len(cond_list)):
+                #    temp_cond_list = cond_list[j]
+                #    for k in range():
+                #result = [all(values) for values in zip(*lists)]
+                and_cond_list = [all(values) for values in zip(*cond_list)]
+                print("and_cond_list: ")
+                print(and_cond_list)
+                print(len(and_cond_list))
+
+                not_positive_regions = df_full_aa[and_cond_list]
+                print("not_positive_regions: ")
+                print(not_positive_regions)
+                print(len(not_positive_regions))
+
+                remain_index_list = df_index[and_cond_list]
+                print("remain_index_list: ")
+                print(remain_index_list)
+                remain_index_list = df_index['index_list'].tolist()
+
+                """
+                nums = [1, 2, 5, 6, 7, 8, 9, 14, 19, 31, 33, 35, 36, 37, 38, 39, 41, 45]
+                ranges = []
+                start = 0
+                for i in range(1, len(nums) + 1):
+                    # 連続が途切れた時
+                    if i == len(nums) or nums[i] != nums[i-1] + 1:
+                        length = i - start
+                        if length >= 5:
+                            ranges.append((start, i - 1))  # (開始インデックス, 終了インデックス)
+                        start = i
+                print(ranges)
+                """
+                ranges = []
+                start = 0
+                for j in range(1, len(remain_index_list) + 1):
+                    # 連続が途切れた時
+                    if j == len(remain_index_list) or remain_index_list[j] != remain_index_list[j-1] + 1:
+                        length = j - start
+                        if length >= 50:
+                            ranges.append((start, j - 1))  # (開始インデックス, 終了インデックス)
+                        start = j
+                print("ranges: ")
+                print(ranges)
+                print(len(ranges))
+
+                if len(ranges) == 0:
+                    filename_no_negative_data = './proteases/df_no_nagative_data.csv'
+                    df_no_negative_data.loc[f'{num_no_negative_data}'] = [protease_turn, protease, substrate_turn, uniprot_id, full_aa, len(full_aa)] #, p1_memo]
+                    df_no_negative_data.to_csv(filename_no_negative_data)
+                    num_no_negative_data += 1
+                    subs_memo = []
+                    p1_memo = []
+                    continue
+                else:
+                    base_num = i-1 - len(ranges) 
+                    for j in range(len(ranges)):
+                        print("ranges[j]: {}".format(ranges[j]))
+                        temp_negative_pattern = ranges[j]
+                        print('temp_negative_pattern: ')
+                        print(temp_negative_pattern)
+                        temp_negative_pattern_list.append(temp_negative_pattern)
+                        pd.DataFrame({
+                            'temp_negative_data': temp_negative_pattern_list
+                        }).to_csv(f'./proteases/temp_negative_data_{protease}.csv')
+                        filename_negatiev_data = f'./proteases/negative_pattern_one_letter_aa_{protease}.csv'
+                        print('full_aa: ')
+                        print(full_aa)
+                        
+                        random.seed(42)
+                        a = np.arange(temp_negative_pattern[0], temp_negative_pattern[1]-50)
+                        np.random.shuffle(a)
+                        for k in range(10): 
+                            #df_negative_pattern.loc[f'{base_num + j}'] = [protease_turn, protease, substrate_turn, uniprot_id, p1, full_aa[a[0]: a[0]+50], full_aa, ranges[j][0], ranges[j][1]]
+                            df_negative_pattern.loc[f'{num_negative_data}'] = [protease_turn, protease, substrate_turn, uniprot_id, p1, full_aa[a[k]: a[k]+50], full_aa, ranges[j][0], ranges[j][1]]
+                            num_negative_data += 1
+                            df_negative_pattern.to_csv(filename_negatiev_data)
+                    subs_memo = []
+                    p1_memo = []
+                    continue
+                #subs_memo = []
+                #p1_memo = []
+            else:
+                subs_memo = []
+                p1_memo = []
+                subs_memo.append(list_subs[i][0])
+                p1_memo.append(list_subs[i][1])
+                pass
+        else:
+            pass
+
+
+        """
+        # rを付けることを推奨。
+        # バックスラッシュをそのままで分かりやすいため。
+        uniprot_id = list_subs[i][0]
+        print(f"uid: {uniprot_id}")
+        content = fr'{uniprot_id}' 
+        pattern = '.*?([A-Z]{1})([A-Z0-9]{2})([A-Z0-9]{3})'
+
+        result = re.match(pattern, content)
+
+        if result: #none以外の場合
+            print(result) 
+            # output:<_sre.SRE_Match object; span=(0, 3), match='hel'>
+            print(result.span()) 
+            # output:(0, 3)
+            print(result.group()) 
+            # output:hel
+        else:
+            continue
+            
+        uniprot_id = result.group(1) + result.group(2) + result.group(3)
+        print(f"uniprot_id: {uniprot_id}")
+        
+        #if uniprot_id in error_list:
+        #    break
+        """
+
+        
+        full_aa = aaseq_from_uid(uniprot_id, protease_turn, substrate_turn)
+        #cleave_pattern = full_aa[p1-3:p1+4]
+        #print(cleave_pattern)
+        
+        print(f"len_full_aa: {len(full_aa)}")
+        if len(full_aa) < trim_len:
+            #'protease_num': [], 'merops_id': [], 'substrate_num': [], 'uniprot_id': [], 'full_aa': [], 'full_aa_length': []
+            df_full_aa_shorter_than_trim_len.loc['f{substrate_turn}'] = [protease_turn, protease, substrate_turn, uniprot_id, full_aa, len(full_aa)]
+            continue
+        
+        # np.random.seed(i)
+        random.seed(42)
+        a = np.arange(len(full_aa)-1)
+
+        print(f"len_a :{len(a)}")
+        
+        for j in range(trim_len):
+            print(f"j: {j}")
+            if p1- trim_len/2 + j < 0:
+                continue
+            elif p1 - trim_len/2 + j > len(full_aa)-1:
+                continue
+            a = a[a != p1 - trim_len/2 + j]
+
+        print("a.")
+        print(a)   
+        random.seed(42)
+        np.random.shuffle(a)
+
+        print("a.")
+        print(a)
+        print(a[0])
+
+        
+        #例外である端っこも取得できるように工夫する
+        if len(full_aa)-1 - a[0] >= trim_len-1:
+            negative_pattern = full_aa[a[0]:a[0]+trim_len]
+        else:
+            term = int(trim_len - (len(full_aa)-1 - a[0]))
+            negative_pattern = full_aa[a[0]:len(full_aa)] + "-"*term
+        
+        #negative_pattern = full_aa[a[0]:a[0]+8]
+        
+        print("negative_pattern.")
+        print(negative_pattern)
+        
+        print("a[0]+trim_len/2: {}".format(a[0]+trim_len/2))
+        print("p1: {}".format(p1))
+        #data={'protease_turn': [], 'merops_id': [], 'substrate_turn': [], 'uniprot_id':[], 'p1':[], 'negative_pattern':[]}
+        #df_negative_pattern.loc[f'{i}'] = [protease_turn, protease, substrate_turn, uniprot_id, a[0]+trim_len/2, negative_pattern]
+        df_negative_pattern.loc[f'{i}'] = [protease_turn, protease, substrate_turn, uniprot_id, p1, negative_pattern, full_aa, p1-trim_len/2, p1+trim_len/2]
+        #display(df_negative_pattern)
+        print("df_negative_pattern.")
+        print(df_negative_pattern)
+
+        substrate_turn = substrate_turn + 1
+
+        filename = f'./proteases/negative_pattern_one_letter_aa_{protease}.csv'
+        df_negative_pattern.to_csv(filename)
+
+        filename_short_aa = f'./proteases/negative_pattern_aa_shorter_than_trim_len_{protease}.csv'
+        df_full_aa_shorter_than_trim_len.to_csv(filename_short_aa)
+
+        filename_uniprot_id_error = f'./proteases/negative_pattern_uniprot_id_error_{protease}.csv'
+        df_uniprot_id_error.to_csv(filename_uniprot_id_error)
+        
+    filename = f'./proteases/negative_pattern_one_letter_aa_{protease}.csv'
+    df_negative_pattern.to_csv(filename)
+
+    filename_short_aa = f'./proteases/negative_pattern_aa_shorter_than_trim_len_{protease}.csv'
+    df_full_aa_shorter_than_trim_len.to_csv(filename_short_aa)
+
+    filename_uniprot_id_error = f'./proteases/negative_pattern_uniprot_id_error_{protease}.csv'
+    df_uniprot_id_error.to_csv(filename_uniprot_id_error)
+
+    #count = count + 1
+    return  df_negative_pattern    
+
+
+#if __name__ == '__name__':
+#    main()
+
+if __name__ == "__main__":
+   main()
+   print("END.")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

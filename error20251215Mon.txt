@@ -1,0 +1,61 @@
+
+
+
+----------------------protease: 1, S08.071; negative_data: 2/193, ('C8UEJ9', 273)--------------------------
+uniprot_id: C8UEJ9
+result01:
+<re.Match object; span=(0, 6), match='C8UEJ9'>
+result02
+<re.Match object; span=(0, 6), match='C8UEJ9'>
+uniprot_id after re: C8UEJ9
+result.
+<re.Match object; span=(0, 6), match='C8UEJ9'>
+p1: 273
+list_subs[i][0]: C8UEJ9
+list_subs[i-1][0]: B2RXX5
+list_subs[i][1]: 273
+list_subs[i-1][1]: 236
+C:\Users\miyazakilab\Documents\workstation_ysasaki\program\protease_predictor_git\01-02-05_creating_positive&negative_data_160aa_refactoring_20251215.py:99: FutureWarning: ChainedAssignmentError: behaviour will change in pandas 3.0!
+You are setting values through chained assignment. Currently this works in certain cases, but when using Copy-on-Write (which will become the default behaviour in pandas 3.0) this will never work to update the original DataFrame or Series, because the intermediate object on which we are setting values will behave as a copy.
+A typical example is when you are setting values in a column of a DataFrame, like:
+
+df["col"][row_indexer] = value
+
+Use `df.loc[row_indexer, "col"] = values` instead, to perform the assignment in a single step and ensure this keeps updating the original `df`.
+
+See the caveats in the documentation: https://pandas.pydata.org/pandas-docs/stable/user_guide/indexing.html#returning-a-view-versus-a-copy
+
+  df['uniprotKB_accession'][0] = uid
+C:\Users\miyazakilab\Documents\workstation_ysasaki\program\protease_predictor_git\01-02-05_creating_positive&negative_data_160aa_refactoring_20251215.py:99: FutureWarning: Series.__setitem__ treating keys as positions is deprecated. In a future version, integer keys will always be treated as labels (consistent with DataFrame behavior). To set a value by position, use `ser.iloc[pos] = value`
+  df['uniprotKB_accession'][0] = uid
+function was not detected.
+sequence was not detected.
+                     uniprotKB_accession function sequence
+protease1_substrate1              C8UEJ9        1        2
+C:\Users\miyazakilab\Documents\workstation_ysasaki\program\protease_predictor_git\01-02-05_creating_positive&negative_data_160aa_refactoring_20251215.py:126: FutureWarning: Series.__getitem__ treating keys as positions is deprecated. In a future version, integer keys will always be treated as labels (consistent with DataFrame behavior). To access a value by position, use `ser.iloc[pos]`
+  print(df["sequence"][0])
+2
+C:\Users\miyazakilab\Documents\workstation_ysasaki\program\protease_predictor_git\01-02-05_creating_positive&negative_data_160aa_refactoring_20251215.py:127: FutureWarning: Series.__getitem__ treating keys as positions is deprecated. In a future version, integer keys will always be treated as labels (consistent with DataFrame behavior). To access a value by position, use `ser.iloc[pos]`
+  return df["sequence"][0]
+len_full_aa: 1
+Traceback (most recent call last):
+  File "C:\Users\miyazakilab\Documents\workstation_ysasaki\program\protease_predictor_git\01-02-05_creating_positive&negative_data_160aa_refactoring_20251215.py", line 705, in <module>
+    main()
+  File "C:\Users\miyazakilab\Documents\workstation_ysasaki\program\protease_predictor_git\01-02-05_creating_positive&negative_data_160aa_refactoring_20251215.py", line 39, in main
+    create_posi_nega_dataset(merops_code_mece, cur, error_list, df_full_aa_shorter_than_trim_len, trim_len)
+  File "C:\Users\miyazakilab\Documents\workstation_ysasaki\program\protease_predictor_git\01-02-05_creating_positive&negative_data_160aa_refactoring_20251215.py", line 200, in create_posi_nega_dataset
+    df_negative_pattern = create_nega_dataset(protease, list_subs, df_negative_pattern, protease_turn, error_list, df_full_aa_shorter_than_trim_len, df_uniprot_id_error, trim_len)
+  File "C:\Users\miyazakilab\Documents\workstation_ysasaki\program\protease_predictor_git\01-02-05_creating_positive&negative_data_160aa_refactoring_20251215.py", line 578, in create_nega_dataset
+    df_full_aa_shorter_than_trim_len.loc['f{substrate_turn}'] = [protease_turn, protease, substrate_turn, uniprot_id, full_aa, len(full_aa)]
+  File "C:\Users\miyazakilab\anaconda3\lib\site-packages\pandas\core\indexing.py", line 911, in __setitem__
+    iloc._setitem_with_indexer(indexer, value, self.name)
+  File "C:\Users\miyazakilab\anaconda3\lib\site-packages\pandas\core\indexing.py", line 1942, in _setitem_with_indexer
+    self._setitem_with_indexer_split_path(indexer, value, name)
+  File "C:\Users\miyazakilab\anaconda3\lib\site-packages\pandas\core\indexing.py", line 2027, in _setitem_with_indexer_split_path
+    raise ValueError(
+ValueError: Must have equal len keys and value when setting with an iterable
+
+(base) C:\Users\miyazakilab\Documents\workstation_ysasaki\program\protease_predictor_git>
+
+
+
