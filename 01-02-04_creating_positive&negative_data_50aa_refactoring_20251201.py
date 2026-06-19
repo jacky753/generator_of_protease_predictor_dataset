@@ -44,12 +44,10 @@ def con_db():
     conn = mydb.connect(
         host='localhost',
         port=3306,
-        user='root',
-        password='miyazakilab',
-        #database='meropsrefs01'
-        database='meropsweb12_1'
+        user='foo',
+        password='bar',
+        database='meropsweb121'
     )
-
     # DB操作用にカーソルを作成
     cur = conn.cursor()
     return cur
